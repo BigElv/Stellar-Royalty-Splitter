@@ -111,6 +111,11 @@ impl RoyaltySplitter {
 
         let version = String::from_str(&env, env!("CARGO_PKG_VERSION"));
         env.storage().instance().set(&DataKey::ContractVersion, &version);
+
+        env.events().publish(
+            (symbol_short!("royalty"), symbol_short!("init")),
+            (collaborators, shares),
+        );
     }
 
     /// Set the secondary royalty rate for resales.
