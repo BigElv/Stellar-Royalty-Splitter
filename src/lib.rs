@@ -244,6 +244,12 @@ impl RoyaltySplitter {
     ///
     /// # Authorization
     /// Requires admin signature
+    ///
+    /// # Panics
+    /// * `"contract not initialized"` — called before `initialize`
+    /// * `"contract is paused"` — contract is currently paused
+    /// * `"total shares must sum to 10000"` — share map does not total 100%
+    /// * `"no balance to distribute"` — contract holds zero tokens
     pub fn distribute(env: Env, token: Address) {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
 
@@ -372,6 +378,7 @@ impl RoyaltySplitter {
     /// * `"contract is paused"` — contract is currently paused
     /// * `"no secondary royalties to distribute"` — pool is empty
     /// * `"no secondary token set"` — no royalty has ever been recorded
+    /// * `"total shares must sum to 10000"` — share map does not total 100%
     /// * `"pool exceeds contract balance"` — pool accounting is inconsistent
     pub fn distribute_secondary_royalties(env: Env) {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
@@ -386,6 +393,10 @@ impl RoyaltySplitter {
 
         if env.storage().instance().get::<DataKey, bool>(&DataKey::Paused).unwrap_or(false) {
             panic!("contract is paused");
+        }
+
+        if Self::get_total_shares(env.clone()) != 10_000 {
+            panic!("total shares must sum to 10000");
         }
 
         let pool: i128 = env

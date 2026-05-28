@@ -13,7 +13,8 @@ import { secondaryRoyaltyRouter } from "./routes/secondary-royalty.js";
 import historyRouter from "./routes/history.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { contractRouter } from "./routes/contract.js";
-import { initializeDatabase, getMigrationVersion } from "./database/index.js";
+import { healthRouter } from "./routes/health.js";
+import { initializeDatabase } from "./database/index.js";
 import db from "./database/index.js";
 
 // Initialize database on startup
@@ -57,7 +58,7 @@ const generalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later." },
-  skip: (req) => req.path === "/api/health",
+  skip: (req) => req.path === "/api/v1/health" || req.path === "/api/health",
 });
 
 // Write limiter: 10 req / 1 min per IP
@@ -105,9 +106,7 @@ app.use("/api/v1/secondary-royalty", secondaryRoyaltyRouter);
 app.use("/api/v1", historyRouter);
 app.use("/api/v1", analyticsRouter);
 app.use("/api/v1/contract", contractRouter);
-
-// Health check
-app.get("/api/v1/health", (_req, res) => res.json({ ok: true, dbVersion: getMigrationVersion() }));
+app.use("/api/v1/health", healthRouter);
 
 // Legacy /api/* redirect to /api/v1/*
 app.use("/api", (req, res) => {

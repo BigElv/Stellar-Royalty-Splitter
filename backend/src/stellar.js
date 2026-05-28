@@ -18,11 +18,107 @@ import logger from "./logger.js";
 
 const RPC_URL =
   process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
+const HORIZON_URL =
+  process.env.HORIZON_URL ?? "https://horizon-testnet.stellar.org";
 const NETWORK = process.env.STELLAR_NETWORK ?? "testnet";
 
 export const server = new SorobanRpc.Server(RPC_URL, { allowHttp: false });
 export const networkPassphrase =
   NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
+
+export function getNetworkLabel() {
+  return NETWORK === "mainnet" ? "Mainnet" : "Testnet";
+}
+
+export function getConfiguredContractId() {
+  return process.env.ROYALTY_CONTRACT_ID ?? process.env.CONTRACT_ID ?? null;
+}
+
+/**
+ * Probe Horizon with a lightweight ledgers request.
+ */
+export async function checkHorizonConnectivity() {
+  const url = `${HORIZON_URL.replace(/\/$/, "")}/ledgers?order=desc&limit=1`;
+  const timeoutMs = parseInt(process.env.HEALTH_CHECK_TIMEOUT_MS ?? "5000", 10);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { Accept: "application/json" },
+    });
+    return {
+      connected: response.ok,
+      url: HORIZON_URL,
+    };
+  } catch {
+    return {
+      connected: false,
+      url: HORIZON_URL,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Report whether a default contract ID is configured and reachable on Soroban RPC.
+ */
+export async function checkContractDeploymentStatus(contractId) {
+  if (!contractId) {
+    return {
+      configured: false,
+      contractId: null,
+      deployed: false,
+      initialized: false,
+      status: "not_configured",
+    };
+  }
+
+  try {
+    const contract = new Contract(contractId);
+    const dummyAccount = new Account(
+      "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+      "0",
+    );
+    const tx = new TransactionBuilder(dummyAccount, {
+      fee: BASE_FEE,
+      networkPassphrase,
+    })
+      .addOperation(contract.call("is_initialized"))
+      .setTimeout(30)
+      .build();
+
+    const sim = await server.simulateTransaction(tx);
+    if (SorobanRpc.Api.isSimulationError(sim)) {
+      return {
+        configured: true,
+        contractId,
+        deployed: false,
+        initialized: false,
+        status: "unreachable",
+      };
+    }
+
+    const initialized = sim.result?.retval?.bool() ?? false;
+    return {
+      configured: true,
+      contractId,
+      deployed: true,
+      initialized,
+      status: initialized ? "initialized" : "deployed",
+    };
+  } catch {
+    return {
+      configured: true,
+      contractId,
+      deployed: false,
+      initialized: false,
+      status: "error",
+    };
+  }
+}
 
 /**
  * Build an unsigned Soroban transaction XDR for a contract invocation.

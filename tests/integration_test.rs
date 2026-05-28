@@ -3,9 +3,9 @@ use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events, MockAuth, MockAuthInvoke},
     token::{Client as TokenClient, StellarAssetClient},
-    vec, Address, Env, IntoVal, Vec as SorobanVec,
+    vec, Address, Env, IntoVal, Map, Vec as SorobanVec,
 };
-use stellar_royalty_splitter::RoyaltySplitterClient;
+use stellar_royalty_splitter::{DataKey, RoyaltySplitterClient};
 
 fn setup(env: &Env) -> (Address, RoyaltySplitterClient) {
     let contract_id = env.register_contract(None, stellar_royalty_splitter::RoyaltySplitter);
@@ -29,6 +29,35 @@ fn test_distribute_before_initialize_panics() {
     let (_, client) = setup(&env);
     let token_admin = Address::generate(&env);
     let token = make_token(&env, &token_admin);
+    client.distribute(&token);
+}
+
+/// Issue #237 — distribute must reject when stored shares do not sum to 10,000.
+#[test]
+#[should_panic(expected = "total shares must sum to 10000")]
+fn test_distribute_rejects_invalid_share_total() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+
+    client.initialize(&vec![&env, admin.clone(), b.clone()], &vec![&env, 5000_u32, 5000_u32]);
+    mint(&env, &token, &contract_id, 1000);
+
+    // Corrupt share map so totals are 60% instead of 100% (defense-in-depth path).
+    let mut bad_map: Map<Address, u32> = Map::new(&env);
+    bad_map.set(admin.clone(), 3000);
+    bad_map.set(b.clone(), 3000);
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::ShareMap, &bad_map);
+    });
+
     client.distribute(&token);
 }
 
