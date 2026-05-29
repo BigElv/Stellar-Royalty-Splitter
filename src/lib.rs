@@ -122,6 +122,11 @@ impl RoyaltySplitter {
 
         let admin = collaborators.get(0).unwrap();
 
+        // Explicitly validate the admin address by requiring its auth signature.
+        // This ensures the stored admin is a real, signable account and prevents
+        // an invalid or uncontrolled address from taking admin control (#264).
+        admin.require_auth();
+
         env.storage().instance().set(&StorageKey::Admin, &admin);
         env.storage().instance().set(&StorageKey::Collaborators, &collaborators);
         env.storage().instance().set(&StorageKey::ShareMap, &share_map);
@@ -157,6 +162,10 @@ impl RoyaltySplitter {
             .expect("contract not initialized");
 
         auth::require_admin(&env, &admin, auth::msg::SET_ROYALTY_RATE_ADMIN);
+
+        if new_rate == 0 {
+            panic!("royalty rate cannot be zero: use a value between 1 and 10000 basis points");
+        }
 
         if new_rate > 10_000 {
             panic!("royalty rate cannot exceed 10000 basis points");
@@ -454,6 +463,11 @@ impl RoyaltySplitter {
         }
 
         let n = recipients_to_use.len();
+
+        // Guard: each recipient must receive at least 1 stroop to avoid silent dust no-ops (#263).
+        if amount < n as i128 {
+            panic!("amount too small: each recipient must receive at least 1 stroop");
+        }
         let mut payouts: Vec<(Address, i128)> = Vec::new(&env);
         let mut total_calculated: i128 = 0;
 
