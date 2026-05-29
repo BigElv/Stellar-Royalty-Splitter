@@ -3,7 +3,10 @@
  * Real transactions are assembled here and returned as XDR so the
  * frontend can sign them with Freighter before submission.
  */
-import {
+import StellarSdk from "@stellar/stellar-sdk";
+import logger from "./logger.js";
+
+const {
   Contract,
   Networks,
   SorobanRpc,
@@ -13,8 +16,7 @@ import {
   Address,
   Account,
   xdr,
-} from "@stellar/stellar-sdk";
-import logger from "./logger.js";
+} = StellarSdk;
 
 const RPC_URL =
   process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";

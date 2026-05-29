@@ -1,7 +1,9 @@
 import { Router } from "express";
-import { Contract, SorobanRpc, TransactionBuilder, BASE_FEE, Account } from "@stellar/stellar-sdk";
+import StellarSdk from "@stellar/stellar-sdk";
 import { isContractInitialized, server, networkPassphrase, addressToScVal } from "../stellar.js";
 import { validateContractIdMiddleware, validateContractId } from "../validation.js";
+
+const { Contract, SorobanRpc, TransactionBuilder, BASE_FEE, Account } = StellarSdk;
 
 export const contractRouter = Router();
 

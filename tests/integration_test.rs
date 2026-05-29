@@ -581,6 +581,80 @@ fn test_distribute_fuzz_style_invariant() {
     }
 }
 
+/// Issue #281 — property-style royalty split arithmetic.
+/// Randomized recipient lists (1-10), sale amounts, and royalty rates are
+/// converted into a royalty pool, then distributed through the primary
+/// `distribute` path. Invariant: recipient balances sum exactly to
+/// `sale_amount * royalty_rate / 10_000`, so no rounding dust is lost or created.
+#[test]
+fn test_distribute_property_royalty_split_arithmetic() {
+    let mut rng = Lcg::new(0x2810_0000_D15A_1B7E);
+
+    for case in 0..50 {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, client) = setup(&env);
+
+        let recipient_count = rng.range(1, 10) as u32;
+        let sale_amount: i128 = rng.range(10_000, 1_000_000_000_000_000) as i128;
+        let royalty_rate = rng.range(1, 10_000) as u32;
+        let expected_royalty = (sale_amount * royalty_rate as i128) / 10_000;
+
+        let mut addrs: std::vec::Vec<Address> = std::vec::Vec::new();
+        for _ in 0..recipient_count {
+            addrs.push(Address::generate(&env));
+        }
+
+        let mut shares: std::vec::Vec<u32> = std::vec::Vec::new();
+        let mut remaining: u32 = 10_000;
+        for i in 0..recipient_count {
+            if i == recipient_count - 1 {
+                shares.push(remaining);
+            } else {
+                let slots_left = (recipient_count - 1 - i) as u64;
+                let max_share = (remaining - slots_left as u32) as u64;
+                let share = rng.range(1, max_share) as u32;
+                shares.push(share);
+                remaining -= share;
+            }
+        }
+
+        let mut soroban_addrs: SorobanVec<Address> = SorobanVec::new(&env);
+        let mut soroban_shares: SorobanVec<u32> = SorobanVec::new(&env);
+        for addr in &addrs {
+            soroban_addrs.push_back(addr.clone());
+        }
+        for &share in &shares {
+            soroban_shares.push_back(share);
+        }
+
+        let token_admin = Address::generate(&env);
+        let token = make_token(&env, &token_admin);
+
+        client.initialize(&soroban_addrs, &soroban_shares);
+        client.set_royalty_rate(&royalty_rate);
+        assert_eq!(client.get_royalty_rate(), royalty_rate);
+
+        mint(&env, &token, &contract_id, expected_royalty);
+        client.distribute(&token);
+
+        let mut total_paid: i128 = 0;
+        for addr in &addrs {
+            total_paid += TokenClient::new(&env, &token).balance(addr);
+        }
+
+        assert_eq!(
+            total_paid, expected_royalty,
+            "case={case} recipients={recipient_count} sale_amount={sale_amount} royalty_rate={royalty_rate}"
+        );
+        assert_eq!(
+            TokenClient::new(&env, &token).balance(&contract_id),
+            0,
+            "case={case} must leave no dust in the contract"
+        );
+    }
+}
+
 /// Issue #252 — fuzz-style: large payment amounts that previously risked i128 overflow
 /// when multiplied before dividing (now uses u128 intermediate arithmetic).
 /// Tests amounts up to i128::MAX / 10_000 across varied split configurations.

@@ -64,6 +64,32 @@ Build an unsigned `distribute` transaction XDR.
 
 **Response:** `{ xdr, transactionId }`
 
+## Simulate Distribution
+
+### `POST /api/v1/simulate`
+
+Dry-run the `distribute` call via Soroban simulation. Returns the expected fee, recipient amounts, and any contract errors without broadcasting or modifying state.
+
+**Body:** `{ contractId, walletAddress, tokenId }`
+
+**Response:**
+```json
+{
+  "fee": 100,
+  "recipientAmounts": [
+    { "address": "G...", "amount": "500" },
+    { "address": "G...", "amount": "500" }
+  ],
+  "contractError": null
+}
+```
+
+- `fee`: The expected Soroban resource fee returned by simulation
+- `recipientAmounts`: Array of `{ address, amount }` entries decoded from simulated `dist` events. Amounts are strings to preserve integer precision. The array is empty if simulation fails before payouts are emitted.
+- `contractError`: Error message if simulation failed, otherwise `null`
+
+The endpoint only calls Soroban RPC simulation. It does not submit the transaction, record a transaction row, or modify contract state.
+
 ## Collaborators
 
 ### `GET /api/v1/collaborators/:contractId`

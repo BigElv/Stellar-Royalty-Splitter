@@ -9,6 +9,23 @@ const mockSimulate = jest.fn();
 const mockIsSimError = jest.fn(() => false);
 
 await jest.unstable_mockModule("@stellar/stellar-sdk", () => ({
+  default: {
+    Address: { fromScVal: jest.fn((scv) => ({ toString: () => scv })) },
+    Contract: jest.fn().mockImplementation(() => ({
+      call: jest.fn((method) => ({ method })),
+    })),
+    SorobanRpc: {
+      Server: jest.fn().mockImplementation(() => ({ simulateTransaction: mockSimulate })),
+      Api: { isSimulationError: mockIsSimError },
+    },
+    TransactionBuilder: jest.fn().mockImplementation(() => ({
+      addOperation: jest.fn().mockReturnThis(),
+      setTimeout: jest.fn().mockReturnThis(),
+      build: jest.fn().mockReturnValue({}),
+    })),
+    BASE_FEE: "100",
+    Account: jest.fn(),
+  },
   Address: { fromScVal: jest.fn((scv) => ({ toString: () => scv })) },
   Contract: jest.fn().mockImplementation(() => ({
     call: jest.fn((method) => ({ method })),
