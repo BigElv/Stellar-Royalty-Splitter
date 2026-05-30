@@ -3,7 +3,8 @@ pub mod auth;
 mod storage;
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token, Address, Env, Map, String, Vec,
+    contract, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env, Map, String,
+    Vec,
 };
 
 #[contracttype]
@@ -59,10 +60,8 @@ impl RoyaltySplitter {
     /// the admin and must authorize this transaction.
     ///
     /// # Arguments
-    /// * `collaborators` - Ordered list of wallet addresses that will receive payouts.
-    ///   The first address is designated as admin. Maximum of 10 recipients allowed.
-    /// * `shares` - Basis-point allocations corresponding to each collaborator
-    ///   (1 bp = 0.01%). Must sum to exactly 10,000 (100%).
+    /// * `collaborators` - Recipient wallet addresses; first is admin (max 10).
+    /// * `shares` - Basis-point allocations per collaborator (must sum to 10,000).
     ///
     /// # Authorization
     /// Requires signature from `collaborators[0]` (the admin).
@@ -74,7 +73,7 @@ impl RoyaltySplitter {
     /// * `"collaborators and shares length mismatch"` — vec lengths differ
     /// * `"shares must sum to 10000"` — allocations don't total 100%
     /// * `"share cannot be zero"` — any individual share is 0
-    /// * `"duplicate collaborator address"` — same address appears more than once
+    /// * `"duplicate collaborator address"` — same address appears twice
     pub fn initialize(env: Env, collaborators: Vec<Address>, shares: Vec<u32>) {
         env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
 
@@ -265,6 +264,34 @@ impl RoyaltySplitter {
         env.storage().instance().set(&StorageKey::Paused, &false);
     }
 
+    /// Replace the contract's executable WASM while preserving instance storage.
+    ///
+    /// The Wasm blob identified by `wasm_hash` must already be uploaded to the
+    /// ledger. The upgrade takes effect after the current transaction completes;
+    /// existing storage entries are unchanged.
+    ///
+    /// # Arguments
+    /// * `wasm_hash` - SHA-256 hash of the uploaded replacement Wasm.
+    ///
+    /// # Authorization
+    /// Requires admin signature.
+    ///
+    /// # Panics
+    /// * `"contract not initialized"` — called before `initialize`
+    pub fn update_wasm(env: Env, wasm_hash: BytesN<32>) {
+        env.storage().instance().extend_ttl(MIN_TTL, MAX_TTL);
+
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::Admin)
+            .expect("contract not initialized");
+
+        auth::require_admin(&env, &admin, auth::msg::UPDATE_WASM_ADMIN);
+
+        env.deployer().update_current_contract_wasm(wasm_hash);
+    }
+
     /// Returns `true` if the contract is currently paused, `false` otherwise.
     /// Defaults to `false` before `pause` is ever called.
     pub fn is_paused(env: Env) -> bool {
@@ -327,7 +354,7 @@ impl RoyaltySplitter {
             .set(&StorageKey::DefaultRecipients, &recipients);
 
         env.events().publish(
-            (symbol_short!("default"), symbol_short!("recipients_set")),
+            (symbol_short!("default"), symbol_short!("rcpt_set")),
             recipients.len(),
         );
     }
@@ -603,7 +630,7 @@ impl RoyaltySplitter {
     /// * `"contract is paused"` — contract is currently paused
     pub fn distribute(env: Env, token: Address) {
         // Call the enhanced version with empty override for backward compatibility
-        Self::distribute_with_override(env, token, Vec::new(&env));
+        Self::distribute_with_override(env.clone(), token, Vec::new(&env));
     }
 
     /// Record a secondary royalty payment transferred from a resale.

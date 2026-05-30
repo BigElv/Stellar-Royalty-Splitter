@@ -19,6 +19,7 @@ pub mod msg {
     pub const DISTRIBUTE_SECONDARY_ADMIN: &str =
         "distribute_secondary_royalties: admin authorization required";
     pub const UPDATE_SHARE_ADMIN: &str = "update_share: admin authorization required";
+    pub const UPDATE_WASM_ADMIN: &str = "update_wasm: admin authorization required";
     pub const RECORD_SECONDARY_PAYER: &str =
         "record_secondary_royalty: payer authorization required";
 }
