@@ -254,6 +254,8 @@ cp backend/.env.example backend/.env
 | `HORIZON_URL`       | Horizon REST endpoint for the chosen network                                            |
 | `SOROBAN_RPC_URL`   | Soroban RPC endpoint for simulating and preparing transactions                          |
 | `SERVER_SECRET_KEY` | Server-side keypair used for read-only simulations only — never signs user transactions |
+| `SIGNING_KEY_FILE` | Optional secrets-manager file path; takes precedence over `SERVER_SECRET_KEY` on load |
+| `ADMIN_ROTATE_TOKEN` | Bearer token for `POST /admin/rotate-key` hot-reload without redeploy (#293) |
 
 ---
 

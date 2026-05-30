@@ -141,3 +141,46 @@ environment variables:
 When the fee fetch fails the backend falls back to `BASE_FEE` (`100` stroops) so transaction submission keeps working.
 
 Transactions built via `retryBuildTx` refresh the account sequence (#275) on every attempt; retries never reuse a stale sequence. Concurrent builds for the same wallet address are serialized with a per-address lock (#294) so simultaneous requests never fetch the same sequence number and fail with `tx_bad_seq`.
+
+## Admin — signing key rotation
+
+### `POST /admin/rotate-key`
+
+Hot-reload the server signing key without redeploying the backend (#293). The in-memory key is used for server-side operations that require a keypair (for example read-only simulations). User-facing transaction routes still return unsigned XDR for client-side signing.
+
+**Authentication:** `Authorization: Bearer <ADMIN_ROTATE_TOKEN>`
+
+**Body (JSON):** provide one of:
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `secretKey` | string | New Stellar secret key (`S...`) to load immediately |
+| `reloadFromFile` | boolean | When `true`, re-read `SIGNING_KEY_FILE` from disk |
+
+**Response:**
+
+```json
+{
+  "publicKey": "G...",
+  "rotatedAt": "2026-05-30T12:00:00.000Z",
+  "source": "api"
+}
+```
+
+| Status | Meaning |
+| ------ | ------- |
+| `200` | Key rotated successfully |
+| `400` | Validation error (missing body fields or invalid secret) |
+| `401` | Missing or invalid admin token |
+| `503` | `ADMIN_ROTATE_TOKEN` is not configured on the server |
+
+**Configuration**
+
+| Variable | Default | Purpose |
+| -------- | ------- | ------- |
+| `SERVER_SECRET_KEY` | — | Initial signing secret from environment |
+| `SIGNING_KEY_FILE` | — | Path to a secrets-manager file; takes precedence on startup and when `reloadFromFile` is true |
+| `ADMIN_ROTATE_TOKEN` | — | Bearer token required to call `/admin/rotate-key` |
+| `RATE_LIMIT_ADMIN_MAX` | `5` | Per-IP rate limit for admin routes (per minute) |
+
+Key rotation events are written to structured logs (`signing_key_rotated`) with previous and new **public** keys only — secret material is never logged.

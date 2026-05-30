@@ -16,11 +16,14 @@ import historyRouter from "./routes/history.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { contractRouter } from "./routes/contract.js";
 import { healthRouter } from "./routes/health.js";
+import { adminRouter } from "./routes/admin.js";
 import { initializeDatabase } from "./database/index.js";
 import db from "./database/index.js";
+import { initializeSigningKey } from "./signing-key.js";
 
 // Initialize database on startup
 initializeDatabase();
+initializeSigningKey();
 
 const app = express();
 
@@ -115,6 +118,17 @@ app.use("/api/v1", historyRouter);
 app.use("/api/v1", analyticsRouter);
 app.use("/api/v1/contract", contractRouter);
 app.use("/api/v1/health", healthRouter);
+
+// Admin operations (separate from /api/v1; protected by ADMIN_ROTATE_TOKEN)
+const adminLimiter = rateLimit({
+  windowMs: 60_000,
+  max: parseInt(process.env.RATE_LIMIT_ADMIN_MAX ?? "5"),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many admin requests, please slow down." },
+});
+app.use("/admin", adminLimiter);
+app.use("/admin", adminRouter);
 
 // Legacy /api/* redirect to /api/v1/*
 app.use("/api", (req, res) => {
