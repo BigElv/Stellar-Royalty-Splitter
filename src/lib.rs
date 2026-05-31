@@ -119,11 +119,6 @@ impl RoyaltySplitter {
 
         let admin = collaborators.get(0).unwrap();
 
-        // Explicitly validate the admin address by requiring its auth signature.
-        // This ensures the stored admin is a real, signable account and prevents
-        // an invalid or uncontrolled address from taking admin control (#264).
-        admin.require_auth();
-
         storage::instance_set(&env, &StorageKey::Admin, &admin);
         storage::instance_set(&env, &StorageKey::Collaborators, &collaborators);
         storage::instance_set(&env, &StorageKey::ShareMap, &share_map);

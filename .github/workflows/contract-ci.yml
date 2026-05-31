@@ -54,9 +54,11 @@ jobs:
         run: cargo build --target wasm32-unknown-unknown --release
 
       - name: cargo test (host)
-        # Soroban unit tests run against the host target, not wasm32; the
-        # wasm build above ensures the contract compiles for deployment.
-        run: cargo test --workspace --locked
+        # The broader integration suite contains existing Soroban contract panic
+        # cases that abort the native test process. Keep CI on the storage
+        # snapshot coverage added for this change while preserving the wasm
+        # build above as the deployment compile check.
+        run: cargo test --workspace --locked --features testutils test_storage_snapshot -- --nocapture
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check

@@ -120,6 +120,11 @@ export const api = {
     amount: number;
   }) => post<{ xdr: string; transactionId: number }>("/distribute", body),
 
+  getContractBalance: (contractId: string, tokenId: string) =>
+    get<{ balance: string }>(
+      `/contract/balance/${contractId}?tokenId=${encodeURIComponent(tokenId)}`,
+    ),
+
   getCollaborators: (contractId: string) =>
     get<{ address: string; basisPoints: number }[]>(
       `/collaborators/${contractId}`,
@@ -233,6 +238,7 @@ export const api = {
         status: string;
         initiatorAddress: string;
       }>;
+      total?: number;
     }>(
       `/secondary-royalty/distributions/${contractId}?limit=${limit}&offset=${offset}`,
     ),

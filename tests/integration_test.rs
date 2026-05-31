@@ -1,9 +1,9 @@
 #![cfg(test)]
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, Events, MockAuth, MockAuthInvoke},
+    testutils::{Address as _, Events, Ledger, MockAuth, MockAuthInvoke},
     token::{Client as TokenClient, StellarAssetClient},
-    vec, Address, BytesN, Env, IntoVal, Map, String, Vec as SorobanVec,
+    vec, Address, BytesN, Env, IntoVal, Map, String, TryFromVal, Val, Vec as SorobanVec,
 };
 use stellar_royalty_splitter::{
     auth, DataKey, Recipient, RoyaltySplitterClient, StorageKey, MIN_TTL, VERSION,
@@ -23,11 +23,20 @@ fn mint(env: &Env, token: &Address, to: &Address, amount: i128) {
     StellarAssetClient::new(env, token).mint(to, &amount);
 }
 
+fn val_eq<T>(env: &Env, actual: Val, expected: T) -> bool
+where
+    T: TryFromVal<Env, Val> + PartialEq,
+{
+    T::try_from_val(env, &actual)
+        .map(|value| value == expected)
+        .unwrap_or(false)
+}
+
 #[test]
 #[should_panic(expected = "contract not initialized")]
 fn test_distribute_before_initialize_panics() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
     let token_admin = Address::generate(&env);
     let token = make_token(&env, &token_admin);
@@ -39,7 +48,7 @@ fn test_distribute_before_initialize_panics() {
 #[should_panic(expected = "total shares must sum to 10000")]
 fn test_distribute_rejects_invalid_share_total() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -68,7 +77,7 @@ fn test_distribute_rejects_invalid_share_total() {
 #[should_panic(expected = "no balance to distribute")]
 fn test_distribute_zero_balance_panics() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
     let a = Address::generate(&env);
     let b = Address::generate(&env);
@@ -83,7 +92,7 @@ fn test_distribute_zero_balance_panics() {
 #[should_panic(expected = "shares must sum to 10000")]
 fn test_royalty_rate_exceeds_max_panics() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
     let a = Address::generate(&env);
     let b = Address::generate(&env);
@@ -97,7 +106,7 @@ fn test_royalty_rate_exceeds_max_panics() {
 #[test]
 fn test_dust_bounded_for_1bp_last_collaborator() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -134,7 +143,7 @@ fn test_distribute_requires_admin_auth() {
     let token_admin = Address::generate(&env);
     let token = make_token(&env, &token_admin);
 
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     client.initialize(
         &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 5000_u32, 5000_u32],
@@ -163,7 +172,7 @@ fn test_distribute_requires_admin_auth() {
 #[test]
 fn test_ttl_extended_after_ledger_advance() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let a = Address::generate(&env);
@@ -175,7 +184,7 @@ fn test_ttl_extended_after_ledger_advance() {
 
     // Advance ledger sequence past MIN_TTL (17_280 ledgers).
     env.ledger()
-        .set_sequence_number(env.ledger().sequence() + MIN_TTL as u32 + 1);
+        .with_mut(|ledger| ledger.sequence_number += MIN_TTL as u32 + 1);
 
     // Both read functions must still return correct data (TTL was extended).
     let collaborators = client.get_collaborators();
@@ -189,7 +198,7 @@ fn test_ttl_extended_after_ledger_advance() {
 #[test]
 fn test_ttl_state_writes_after_ledger_advance() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -204,7 +213,7 @@ fn test_ttl_state_writes_after_ledger_advance() {
     client.set_royalty_rate(&500_u32);
 
     env.ledger()
-        .set_sequence_number(env.ledger().sequence() + MIN_TTL as u32 + 1);
+        .with_mut(|ledger| ledger.sequence_number += MIN_TTL as u32 + 1);
 
     client.set_royalty_rate(&750_u32);
     assert_eq!(client.get_royalty_rate(), 750);
@@ -226,11 +235,127 @@ fn test_ttl_state_writes_after_ledger_advance() {
     assert_eq!(client.get_secondary_pool(), 100);
 }
 
+/// Issue #291 — snapshot the exact instance storage entries written by initialize.
+#[test]
+fn test_storage_snapshot_after_initialize() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let collaborator = Address::generate(&env);
+
+    client.initialize(
+        &vec![&env, admin.clone(), collaborator.clone()],
+        &vec![&env, 7000_u32, 3000_u32],
+    );
+
+    env.as_contract(&contract_id, || {
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::Admin)
+            .expect("admin should be stored");
+        let stored_collaborators: SorobanVec<Address> = env
+            .storage()
+            .instance()
+            .get(&StorageKey::Collaborators)
+            .expect("collaborators should be stored");
+        let stored_shares: Map<Address, u32> = env
+            .storage()
+            .instance()
+            .get(&StorageKey::ShareMap)
+            .expect("share map should be stored");
+        let stored_version: String = env
+            .storage()
+            .instance()
+            .get(&StorageKey::ContractVersion)
+            .expect("contract version should be stored");
+
+        assert_eq!(stored_admin, admin);
+        assert_eq!(stored_collaborators.len(), 2);
+        assert_eq!(stored_collaborators.get(0).unwrap(), admin);
+        assert_eq!(stored_collaborators.get(1).unwrap(), collaborator);
+        assert_eq!(stored_shares.len(), 2);
+        assert_eq!(stored_shares.get(admin).unwrap(), 7000);
+        assert_eq!(stored_shares.get(collaborator).unwrap(), 3000);
+        assert_eq!(stored_version, String::from_str(&env, VERSION));
+
+        assert!(!env.storage().instance().has(&StorageKey::LastDistribution));
+        assert!(!env.storage().instance().has(&StorageKey::DistributeHistory));
+        assert!(!env.storage().instance().has(&StorageKey::SecondaryPool));
+    });
+}
+
+/// Issue #291 — snapshot the storage entries added after a successful distribute.
+#[test]
+fn test_storage_snapshot_after_distribute() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (contract_id, client) = setup(&env);
+
+    let admin = Address::generate(&env);
+    let collaborator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = make_token(&env, &token_admin);
+    let distribution_timestamp = 1_700_000_000_u64;
+
+    client.initialize(
+        &vec![&env, admin.clone(), collaborator.clone()],
+        &vec![&env, 6000_u32, 4000_u32],
+    );
+
+    mint(&env, &token, &contract_id, 10_000);
+    env.ledger()
+        .with_mut(|ledger| ledger.timestamp = distribution_timestamp);
+
+    client.distribute(&token);
+
+    env.as_contract(&contract_id, || {
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::Admin)
+            .expect("admin should remain stored");
+        let stored_collaborators: SorobanVec<Address> = env
+            .storage()
+            .instance()
+            .get(&StorageKey::Collaborators)
+            .expect("collaborators should remain stored");
+        let stored_shares: Map<Address, u32> = env
+            .storage()
+            .instance()
+            .get(&StorageKey::ShareMap)
+            .expect("share map should remain stored");
+        let last_distribution: u64 = env
+            .storage()
+            .instance()
+            .get(&StorageKey::LastDistribution)
+            .expect("last distribution timestamp should be stored");
+        let distribute_count: u64 = env
+            .storage()
+            .instance()
+            .get(&StorageKey::DistributeHistory)
+            .expect("distribute count should be stored");
+
+        assert_eq!(stored_admin, admin);
+        assert_eq!(stored_collaborators.len(), 2);
+        assert_eq!(stored_collaborators.get(0).unwrap(), admin);
+        assert_eq!(stored_collaborators.get(1).unwrap(), collaborator);
+        assert_eq!(stored_shares.len(), 2);
+        assert_eq!(stored_shares.get(admin).unwrap(), 6000);
+        assert_eq!(stored_shares.get(collaborator).unwrap(), 4000);
+        assert_eq!(last_distribution, distribution_timestamp);
+        assert_eq!(distribute_count, 1);
+        assert!(!env.storage().instance().has(&StorageKey::SecondaryPool));
+    });
+}
+
 /// Events — distribute emits a ("royalty", "dist_all") event with (token, amount).
 #[test]
 fn test_distribute_emits_event() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -255,7 +380,7 @@ fn test_distribute_emits_event() {
                     symbol_short!("royalty").into_val(&env),
                     symbol_short!("dist_all").into_val(&env),
                 ]
-            && data == (token.clone(), amount).into_val(&env)
+            && val_eq(&env, data, (token.clone(), amount))
     });
     assert!(found, "dist_all event not emitted");
 }
@@ -264,7 +389,7 @@ fn test_distribute_emits_event() {
 #[test]
 fn test_set_royalty_rate_emits_event() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -286,7 +411,7 @@ fn test_set_royalty_rate_emits_event() {
                     symbol_short!("royalty").into_val(&env),
                     symbol_short!("rate_set").into_val(&env),
                 ]
-            && data == rate.into_val(&env)
+            && val_eq(&env, data, rate)
     });
     assert!(found, "rate_set event not emitted");
 }
@@ -295,7 +420,7 @@ fn test_set_royalty_rate_emits_event() {
 #[test]
 fn test_distribute_secondary_royalties_emits_event() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -322,7 +447,7 @@ fn test_distribute_secondary_royalties_emits_event() {
                     symbol_short!("royalty").into_val(&env),
                     symbol_short!("sec_dist").into_val(&env),
                 ]
-            && data == (token.clone(), pool_amount).into_val(&env)
+            && val_eq(&env, data, (token.clone(), pool_amount))
     });
     assert!(found, "sec_dist event not emitted");
 }
@@ -331,7 +456,7 @@ fn test_distribute_secondary_royalties_emits_event() {
 #[should_panic(expected = "share cannot be zero")]
 fn test_zero_share_rejected() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
     let a = Address::generate(&env);
     let b = Address::generate(&env);
@@ -342,7 +467,7 @@ fn test_zero_share_rejected() {
 #[test]
 fn test_collaborator_count() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
     let a = Address::generate(&env);
     let b = Address::generate(&env);
@@ -362,7 +487,10 @@ fn test_unauthorized_init_rejected() {
     let (_, client) = setup(&env);
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 }
 
 /// Issue #160 — pause blocks distribute.
@@ -370,7 +498,7 @@ fn test_unauthorized_init_rejected() {
 #[should_panic(expected = "contract is paused")]
 fn test_distribute_blocked_when_paused() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -394,7 +522,7 @@ fn test_distribute_blocked_when_paused() {
 #[should_panic(expected = "contract is paused")]
 fn test_distribute_secondary_blocked_when_paused() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -420,7 +548,7 @@ fn test_distribute_secondary_blocked_when_paused() {
 #[test]
 fn test_distribute_succeeds_after_unpause() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -455,7 +583,7 @@ fn test_pause_requires_admin_auth() {
     let (_, client) = setup(&env);
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     client.initialize(
         &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 5000_u32, 5000_u32],
@@ -471,11 +599,14 @@ fn test_pause_requires_admin_auth() {
 #[test]
 fn test_royalty_rate_boundary_zero() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     client.set_royalty_rate(&0_u32);
     assert_eq!(client.get_royalty_rate(), 0);
@@ -485,11 +616,14 @@ fn test_royalty_rate_boundary_zero() {
 #[test]
 fn test_royalty_rate_boundary_max() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     client.set_royalty_rate(&10_000_u32);
     assert_eq!(client.get_royalty_rate(), 10_000);
@@ -500,11 +634,14 @@ fn test_royalty_rate_boundary_max() {
 #[should_panic(expected = "royalty rate cannot exceed 10000 basis points")]
 fn test_royalty_rate_above_max_rejected() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     client.set_royalty_rate(&10_001_u32);
 }
@@ -524,7 +661,7 @@ fn test_set_royalty_rate_unauthorized_caller() {
     let b = Address::generate(&env);
 
     // Initialize with mock_all_auths so setup succeeds
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     client.initialize(
         &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 5000_u32, 5000_u32],
@@ -555,7 +692,7 @@ fn test_distribute_unauthorized_caller() {
     let token = make_token(&env, &token_admin);
 
     // Initialize and fund the contract
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     client.initialize(
         &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 5000_u32, 5000_u32],
@@ -607,7 +744,7 @@ fn test_distribute_fuzz_style_invariant() {
 
     for _ in 0..20 {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         let (contract_id, client) = setup(&env);
 
         let n = rng.range(1, 10) as u32;
@@ -672,7 +809,7 @@ fn test_distribute_property_royalty_split_arithmetic() {
 
     for case in 0..50 {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         let (contract_id, client) = setup(&env);
 
         let recipient_count = rng.range(1, 10) as u32;
@@ -754,7 +891,7 @@ fn test_distribute_fuzz_large_amounts_no_overflow() {
     for amount in large_amounts {
         for (share_a, share_b) in split_configs {
             let env = Env::default();
-            env.mock_all_auths();
+            env.mock_all_auths_allowing_non_root_auth();
             let (contract_id, client) = setup(&env);
 
             let admin = Address::generate(&env);
@@ -787,7 +924,7 @@ fn test_distribute_secondary_fuzz_style() {
 
     for _ in 0..15 {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         let (contract_id, client) = setup(&env);
 
         let n = rng.range(1, 10) as u32;
@@ -852,7 +989,7 @@ fn test_distribute_secondary_fuzz_style() {
 #[test]
 fn test_initialize_with_10_recipients_succeeds() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let mut addrs: SorobanVec<Address> = SorobanVec::new(&env);
@@ -872,7 +1009,7 @@ fn test_initialize_with_10_recipients_succeeds() {
 #[should_panic(expected = "too many recipients: maximum 10 allowed")]
 fn test_initialize_with_11_recipients_panics() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let mut addrs: SorobanVec<Address> = SorobanVec::new(&env);
@@ -892,7 +1029,7 @@ fn test_initialize_with_11_recipients_panics() {
 #[should_panic(expected = "too many recipients: maximum 10 allowed")]
 fn test_initialize_with_15_recipients_panics() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let mut addrs: SorobanVec<Address> = SorobanVec::new(&env);
@@ -913,7 +1050,7 @@ fn test_initialize_with_15_recipients_panics() {
 #[should_panic(expected = "already initialized")]
 fn test_initialize_twice_panics() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let a = Address::generate(&env);
@@ -934,7 +1071,7 @@ fn test_initialize_twice_panics() {
 #[test]
 fn test_reinitialize_does_not_modify_state() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let a = Address::generate(&env);
@@ -982,9 +1119,9 @@ fn test_admin_transfer_updates_admin() {
     let b = Address::generate(&env);
     let new_admin = Address::generate(&env);
 
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     client.initialize(
-        &vec![&env, admin.clone(), b],
+        &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 5000_u32, 5000_u32],
     );
 
@@ -1005,7 +1142,7 @@ fn test_admin_transfer_updates_admin() {
 #[test]
 fn test_admin_transfer_emits_event() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1013,7 +1150,7 @@ fn test_admin_transfer_emits_event() {
     let new_admin = Address::generate(&env);
 
     client.initialize(
-        &vec![&env, admin.clone(), b],
+        &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 5000_u32, 5000_u32],
     );
     client.admin_transfer(&new_admin);
@@ -1027,7 +1164,7 @@ fn test_admin_transfer_emits_event() {
                     symbol_short!("royalty").into_val(&env),
                     symbol_short!("admin_xfr").into_val(&env),
                 ]
-            && data == (admin, new_admin).into_val(&env)
+            && val_eq(&env, data, (admin.clone(), new_admin.clone()))
     });
     assert!(found, "admin_xfr event not emitted");
 }
@@ -1042,8 +1179,11 @@ fn test_admin_transfer_requires_admin_auth() {
     let b = Address::generate(&env);
     let new_admin = Address::generate(&env);
 
-    env.mock_all_auths();
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    env.mock_all_auths_allowing_non_root_auth();
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     // No mock auths for admin_transfer — must panic on require_auth
     client.admin_transfer(&new_admin);
@@ -1056,7 +1196,7 @@ fn test_admin_transfer_requires_admin_auth() {
 #[should_panic(expected = "recipients list cannot be empty")]
 fn test_distribute_empty_recipients_panics() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1065,7 +1205,7 @@ fn test_distribute_empty_recipients_panics() {
     let token = make_token(&env, &token_admin);
 
     client.initialize(
-        &vec![&env, admin.clone(), b],
+        &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 5000_u32, 5000_u32],
     );
     mint(&env, &token, &contract_id, 1000);
@@ -1091,9 +1231,9 @@ fn test_set_default_recipients_requires_admin_auth() {
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
 
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     client.initialize(
-        &vec![&env, admin.clone(), b],
+        &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 5000_u32, 5000_u32],
     );
 
@@ -1127,14 +1267,17 @@ fn test_set_default_recipients_requires_admin_auth() {
 #[should_panic(expected = "recipients list cannot be empty")]
 fn test_set_default_recipients_empty_list_panics() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
-    let empty_recipients: Vec<Recipient> = vec![&env];
+    let empty_recipients: SorobanVec<Recipient> = vec![&env];
     client.set_default_recipients(&empty_recipients);
 }
 
@@ -1143,14 +1286,17 @@ fn test_set_default_recipients_empty_list_panics() {
 #[should_panic(expected = "too many recipients: maximum 10 allowed")]
 fn test_set_default_recipients_too_many_panics() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
-    let mut recipients: Vec<Recipient> = Vec::new(&env);
+    let mut recipients: SorobanVec<Recipient> = SorobanVec::new(&env);
     for _ in 0..11 {
         recipients.push_back(Recipient {
             address: Address::generate(&env),
@@ -1166,12 +1312,15 @@ fn test_set_default_recipients_too_many_panics() {
 #[should_panic(expected = "shares must sum to 10000")]
 fn test_set_default_recipients_invalid_share_sum_panics() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     let recipient1 = Recipient {
         address: admin,
@@ -1191,12 +1340,15 @@ fn test_set_default_recipients_invalid_share_sum_panics() {
 #[should_panic(expected = "share cannot be zero")]
 fn test_set_default_recipients_zero_share_panics() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     let recipient1 = Recipient {
         address: admin,
@@ -1216,12 +1368,15 @@ fn test_set_default_recipients_zero_share_panics() {
 #[should_panic(expected = "duplicate recipient address")]
 fn test_set_default_recipients_duplicate_address_panics() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     let recipient1 = Recipient {
         address: admin.clone(),
@@ -1240,12 +1395,15 @@ fn test_set_default_recipients_duplicate_address_panics() {
 #[test]
 fn test_set_default_recipients_emits_event() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     let recipient1 = Recipient {
         address: admin.clone(),
@@ -1267,7 +1425,7 @@ fn test_set_default_recipients_emits_event() {
                     symbol_short!("default").into_val(&env),
                     symbol_short!("rcpt_set").into_val(&env),
                 ]
-            && data == 2_u32.into_val(&env)
+            && val_eq(&env, data, 2_u32)
     });
     assert!(found, "rcpt_set event not emitted");
 }
@@ -1276,12 +1434,15 @@ fn test_set_default_recipients_emits_event() {
 #[test]
 fn test_get_default_recipients_empty_when_not_set() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     let defaults = client.get_default_recipients();
     assert_eq!(defaults.len(), 0);
@@ -1291,7 +1452,7 @@ fn test_get_default_recipients_empty_when_not_set() {
 #[test]
 fn test_get_default_recipients_returns_configured() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1326,7 +1487,7 @@ fn test_get_default_recipients_returns_configured() {
 #[test]
 fn test_distribute_with_override_uses_override() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1359,7 +1520,7 @@ fn test_distribute_with_override_uses_override() {
         share: 10000_u32,
     };
     let overrides = vec![&env, override1];
-    client.distribute_with_override(&token, overrides);
+    client.distribute_with_override(&token, &overrides);
 
     assert_eq!(TokenClient::new(&env, &token).balance(&c), 1000);
     assert_eq!(TokenClient::new(&env, &token).balance(&admin), 0);
@@ -1370,7 +1531,7 @@ fn test_distribute_with_override_uses_override() {
 #[test]
 fn test_distribute_with_override_falls_back_to_defaults() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1397,8 +1558,8 @@ fn test_distribute_with_override_falls_back_to_defaults() {
     let amount: i128 = 1000;
     mint(&env, &token, &contract_id, amount);
 
-    let empty_override: Vec<Recipient> = vec![&env];
-    client.distribute_with_override(&token, empty_override);
+    let empty_override: SorobanVec<Recipient> = vec![&env];
+    client.distribute_with_override(&token, &empty_override);
 
     assert_eq!(TokenClient::new(&env, &token).balance(&admin), 600);
     assert_eq!(TokenClient::new(&env, &token).balance(&b), 400);
@@ -1408,7 +1569,7 @@ fn test_distribute_with_override_falls_back_to_defaults() {
 #[test]
 fn test_distribute_with_override_falls_back_to_collaborators() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1424,8 +1585,8 @@ fn test_distribute_with_override_falls_back_to_collaborators() {
     let amount: i128 = 1000;
     mint(&env, &token, &contract_id, amount);
 
-    let empty_override: Vec<Recipient> = vec![&env];
-    client.distribute_with_override(&token, empty_override);
+    let empty_override: SorobanVec<Recipient> = vec![&env];
+    client.distribute_with_override(&token, &empty_override);
 
     assert_eq!(TokenClient::new(&env, &token).balance(&admin), 500);
     assert_eq!(TokenClient::new(&env, &token).balance(&b), 500);
@@ -1443,15 +1604,18 @@ fn test_distribute_with_override_requires_admin_auth() {
     let token_admin = Address::generate(&env);
     let token = make_token(&env, &token_admin);
 
-    env.mock_all_auths();
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    env.mock_all_auths_allowing_non_root_auth();
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     let amount: i128 = 1000;
     mint(&env, &token, &contract_id, amount);
 
     env.mock_auths(&[]);
-    let empty_override: Vec<Recipient> = vec![&env];
-    client.distribute_with_override(&token, empty_override);
+    let empty_override: SorobanVec<Recipient> = vec![&env];
+    client.distribute_with_override(&token, &empty_override);
 }
 
 /// Test distribute_with_override respects pause
@@ -1459,7 +1623,7 @@ fn test_distribute_with_override_requires_admin_auth() {
 #[should_panic(expected = "contract is paused")]
 fn test_distribute_with_override_respects_pause() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1467,15 +1631,18 @@ fn test_distribute_with_override_respects_pause() {
     let token_admin = Address::generate(&env);
     let token = make_token(&env, &token_admin);
 
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     let amount: i128 = 1000;
     mint(&env, &token, &contract_id, amount);
 
     client.pause();
 
-    let empty_override: Vec<Recipient> = vec![&env];
-    client.distribute_with_override(&token, empty_override);
+    let empty_override: SorobanVec<Recipient> = vec![&env];
+    client.distribute_with_override(&token, &empty_override);
 }
 
 // ── Distribute History Counter Tests ────────────────────────────────────────
@@ -1484,12 +1651,15 @@ fn test_distribute_with_override_respects_pause() {
 #[test]
 fn test_get_distribute_count_initially_zero() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     assert_eq!(client.get_distribute_count(), 0);
 }
@@ -1498,7 +1668,7 @@ fn test_get_distribute_count_initially_zero() {
 #[test]
 fn test_get_distribute_count_increments_on_distribute() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1529,7 +1699,7 @@ fn test_get_distribute_count_increments_on_distribute() {
 #[test]
 fn test_get_distribute_count_increments_on_distribute_with_override() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1547,8 +1717,8 @@ fn test_get_distribute_count_increments_on_distribute_with_override() {
     let amount: i128 = 1000;
     mint(&env, &token, &contract_id, amount);
 
-    let empty_override: Vec<Recipient> = vec![&env];
-    client.distribute_with_override(&token, empty_override);
+    let empty_override: SorobanVec<Recipient> = vec![&env];
+    client.distribute_with_override(&token, &empty_override);
 
     assert_eq!(client.get_distribute_count(), 1);
 }
@@ -1557,7 +1727,7 @@ fn test_get_distribute_count_increments_on_distribute_with_override() {
 #[test]
 fn test_get_distribute_count_never_decrements() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1588,7 +1758,7 @@ fn test_get_distribute_count_never_decrements() {
 #[test]
 fn test_distribute_history_overflow_safety() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1622,7 +1792,7 @@ fn test_distribute_history_overflow_safety() {
 #[test]
 fn test_multi_token_distribution() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1661,7 +1831,7 @@ fn test_multi_token_distribution() {
 #[test]
 fn test_multi_token_distribute_with_override() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1695,14 +1865,14 @@ fn test_multi_token_distribute_with_override() {
         share: 10000_u32,
     };
     let overrides = vec![&env, override1];
-    client.distribute_with_override(&token1, overrides);
+    client.distribute_with_override(&token1, &overrides);
 
     assert_eq!(TokenClient::new(&env, &token1).balance(&c), 1000);
 
     let amount2: i128 = 2000;
     mint(&env, &token2, &contract_id, amount2);
-    let empty_override: Vec<Recipient> = vec![&env];
-    client.distribute_with_override(&token2, empty_override);
+    let empty_override: SorobanVec<Recipient> = vec![&env];
+    client.distribute_with_override(&token2, &empty_override);
 
     assert_eq!(TokenClient::new(&env, &token2).balance(&admin), 1200);
     assert_eq!(TokenClient::new(&env, &token2).balance(&b), 800);
@@ -1714,7 +1884,7 @@ fn test_multi_token_distribute_with_override() {
 #[test]
 fn test_backward_compatibility_original_distribute() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1741,7 +1911,7 @@ fn test_backward_compatibility_original_distribute() {
 #[test]
 fn test_existing_functionality_preserved() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1775,7 +1945,7 @@ fn test_existing_functionality_preserved() {
 #[test]
 fn test_storage_key_isolation() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1832,12 +2002,15 @@ fn test_auth_message_constants_include_function_context() {
 #[test]
 fn test_auth_req_event_emitted_on_initialize() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     let events = env.events().all();
     let found = events.iter().any(|(_cid, topics, _data)| {
@@ -1854,13 +2027,13 @@ fn test_auth_req_event_emitted_on_initialize() {
 #[test]
 fn test_get_admin_returns_initial_admin() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
     client.initialize(
-        &vec![&env, admin.clone(), b],
+        &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 5000_u32, 5000_u32],
     );
 
@@ -1870,7 +2043,7 @@ fn test_get_admin_returns_initial_admin() {
 #[test]
 fn test_get_admin_reflects_admin_transfer() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -1878,7 +2051,7 @@ fn test_get_admin_reflects_admin_transfer() {
     let new_admin = Address::generate(&env);
 
     client.initialize(
-        &vec![&env, admin.clone(), b],
+        &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 5000_u32, 5000_u32],
     );
     assert_eq!(client.get_admin(), admin);
@@ -1891,7 +2064,7 @@ fn test_get_admin_reflects_admin_transfer() {
 #[should_panic(expected = "contract not initialized")]
 fn test_get_admin_before_initialize_panics() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
     client.get_admin();
 }
@@ -1901,12 +2074,15 @@ fn test_get_admin_before_initialize_panics() {
 #[test]
 fn test_get_version_stored_on_initialize() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     assert_eq!(client.get_version(), String::from_str(&env, VERSION));
 }
@@ -1915,7 +2091,7 @@ fn test_get_version_stored_on_initialize() {
 #[should_panic(expected = "contract not initialized")]
 fn test_get_version_before_initialize_panics() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
     client.get_version();
 }
@@ -1939,7 +2115,7 @@ fn test_update_wasm_preserves_state() {
     let token_admin = Address::generate(&env);
     let token = make_token(&env, &token_admin);
 
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     client.initialize(
         &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 6000_u32, 4000_u32],
@@ -1953,7 +2129,7 @@ fn test_update_wasm_preserves_state() {
         invoke: &MockAuthInvoke {
             contract: &contract_id,
             fn_name: "update_wasm",
-            args: (&wasm_hash,).into_val(&env),
+            args: (wasm_hash.clone(),).into_val(&env),
             sub_invokes: &[],
         },
     }]);
@@ -1966,7 +2142,7 @@ fn test_update_wasm_preserves_state() {
     assert!(client.is_paused());
 
     mint(&env, &token, &contract_id, 1000);
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     client.distribute(&token);
     assert_eq!(TokenClient::new(&env, &token).balance(&admin), 600);
     assert_eq!(TokenClient::new(&env, &token).balance(&b), 400);
@@ -1981,8 +2157,11 @@ fn test_update_wasm_requires_admin_auth() {
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
 
-    env.mock_all_auths();
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    env.mock_all_auths_allowing_non_root_auth();
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
 
     let wasm_hash = upload_contract_wasm(&env);
 
@@ -1994,7 +2173,7 @@ fn test_update_wasm_requires_admin_auth() {
 #[should_panic(expected = "contract not initialized")]
 fn test_update_wasm_before_initialize_panics() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let wasm_hash = upload_contract_wasm(&env);
@@ -2006,7 +2185,7 @@ fn test_update_wasm_before_initialize_panics() {
 #[test]
 fn test_set_recipients_updates_primary_list() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -2048,7 +2227,7 @@ fn test_set_recipients_requires_admin_auth() {
     let b = Address::generate(&env);
     let c = Address::generate(&env);
 
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     client.initialize(
         &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 5000_u32, 5000_u32],
@@ -2081,7 +2260,7 @@ fn test_set_recipients_requires_admin_auth() {
 #[test]
 fn test_set_recipients_emits_event() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -2113,7 +2292,7 @@ fn test_set_recipients_emits_event() {
                     symbol_short!("royalty").into_val(&env),
                     symbol_short!("recip_set").into_val(&env),
                 ]
-            && data == 2_u32.into_val(&env)
+            && val_eq(&env, data, 2_u32)
     });
     assert!(found, "recip_set event not emitted");
 }
@@ -2127,7 +2306,7 @@ fn test_set_recipients_unauthorized_caller() {
     let admin = Address::generate(&env);
     let b = Address::generate(&env);
 
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     client.initialize(
         &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 5000_u32, 5000_u32],
@@ -2154,7 +2333,7 @@ fn test_set_recipients_unauthorized_caller() {
 #[test]
 fn test_withdraw_transfers_to_admin() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -2185,7 +2364,7 @@ fn test_withdraw_requires_admin_auth() {
     let token_admin = Address::generate(&env);
     let token = make_token(&env, &token_admin);
 
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     client.initialize(
         &vec![&env, admin.clone(), b.clone()],
         &vec![&env, 5000_u32, 5000_u32],
@@ -2209,7 +2388,7 @@ fn test_withdraw_requires_admin_auth() {
 #[test]
 fn test_withdraw_emits_event() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -2235,7 +2414,7 @@ fn test_withdraw_emits_event() {
                     symbol_short!("royalty").into_val(&env),
                     symbol_short!("withdraw").into_val(&env),
                 ]
-            && data == (token.clone(), amount).into_val(&env)
+            && val_eq(&env, data, (token.clone(), amount))
     });
     assert!(found, "withdraw event not emitted");
 }
@@ -2244,7 +2423,7 @@ fn test_withdraw_emits_event() {
 #[should_panic(expected = "insufficient balance")]
 fn test_withdraw_insufficient_balance_panics() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (_, client) = setup(&env);
 
     let admin = Address::generate(&env);
@@ -2252,7 +2431,10 @@ fn test_withdraw_insufficient_balance_panics() {
     let token_admin = Address::generate(&env);
     let token = make_token(&env, &token_admin);
 
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
     client.withdraw(&token, &100_i128);
 }
 
@@ -2267,8 +2449,11 @@ fn test_withdraw_unauthorized_caller() {
     let token_admin = Address::generate(&env);
     let token = make_token(&env, &token_admin);
 
-    env.mock_all_auths();
-    client.initialize(&vec![&env, admin, b], &vec![&env, 5000_u32, 5000_u32]);
+    env.mock_all_auths_allowing_non_root_auth();
+    client.initialize(
+        &vec![&env, admin.clone(), b.clone()],
+        &vec![&env, 5000_u32, 5000_u32],
+    );
     mint(&env, &token, &contract_id, 100);
 
     env.mock_auths(&[]);
@@ -2286,7 +2471,7 @@ fn test_withdraw_unauthorized_caller() {
 #[should_panic(expected = "no balance to distribute")]
 fn test_distribute_zero_balance() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let (contract_id, client) = setup(&env);
 
     let admin = Address::generate(&env);

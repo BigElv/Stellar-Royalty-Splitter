@@ -64,7 +64,9 @@ export default function App() {
         return;
       }
       try {
-        const { address } = await window.freighter.getAddress();
+        const { address } = window.freighter.getAddress
+          ? await window.freighter.getAddress()
+          : { address: "" };
         if (address) setWalletAddress(address);
       } catch {
         // Not yet authorized — user must connect manually
