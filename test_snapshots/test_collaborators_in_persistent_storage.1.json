@@ -26,10 +26,10 @@
                 {
                   "vec": [
                     {
-                      "u32": 7000
+                      "u32": 5000
                     },
                     {
-                      "u32": 3000
+                      "u32": 5000
                     }
                   ]
                 }
@@ -134,7 +134,7 @@
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                       },
                       "val": {
-                        "u32": 7000
+                        "u32": 5000
                       }
                     },
                     {
@@ -142,7 +142,7 @@
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                       },
                       "val": {
-                        "u32": 3000
+                        "u32": 5000
                       }
                     }
                   ]
@@ -301,10 +301,10 @@
                 {
                   "vec": [
                     {
-                      "u32": 7000
+                      "u32": 5000
                     },
                     {
-                      "u32": 3000
+                      "u32": 5000
                     }
                   ]
                 }
@@ -365,10 +365,10 @@
                 {
                   "vec": [
                     {
-                      "u32": 7000
+                      "u32": 5000
                     },
                     {
-                      "u32": 3000
+                      "u32": 5000
                     }
                   ]
                 }
