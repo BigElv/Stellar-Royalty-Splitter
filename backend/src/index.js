@@ -117,6 +117,21 @@ app.use("/api", (req, res) => {
 // Central error handler
 app.use((err, _req, res, _next) => {
   logger.error(err);
+
+  // Structured errors thrown by stellar.js (Soroban / RPC errors)
+  if (err.status && err.code) {
+    return res.status(err.status).json({
+      error: err.message,
+      code: err.code,
+      ...(err.detail !== undefined && { detail: err.detail }),
+    });
+  }
+
+  // Structured errors with status but no code (e.g. validation helpers)
+  if (err.status) {
+    return res.status(err.status).json({ error: err.message });
+  }
+
   res.status(500).json({ error: err.message ?? "Internal server error" });
 });
 

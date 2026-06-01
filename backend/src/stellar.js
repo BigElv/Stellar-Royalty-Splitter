@@ -25,6 +25,66 @@ export const networkPassphrase =
   NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
 
 /**
+ * Parse a Soroban simulation or submission error into a structured object
+ * with a human-readable message, error code, and any available context.
+ */
+export function parseSorobanError(error) {
+  // Simulation error from prepareTransaction / simulateTransaction
+  if (error?.result?.error) {
+    const raw = error.result.error;
+    return {
+      status: 400,
+      code: "SOROBAN_SIMULATION_ERROR",
+      message: `Contract simulation failed: ${raw}`,
+      detail: raw,
+    };
+  }
+
+  // SorobanRpc simulation error object
+  if (error?._type === "SimulateTransactionError" || error?.events !== undefined && error?.error) {
+    return {
+      status: 400,
+      code: "SOROBAN_SIMULATION_ERROR",
+      message: `Contract simulation failed: ${error.error}`,
+      detail: error.error,
+    };
+  }
+
+  // Horizon submission error — extract result_codes
+  const resultCodes =
+    error?.response?.data?.extras?.result_codes ??
+    error?.data?.extras?.result_codes ??
+    error?.extras?.result_codes;
+
+  if (resultCodes) {
+    const txCode = resultCodes.transaction ?? "unknown";
+    const opCodes = resultCodes.operations ?? [];
+    const detail = opCodes.length
+      ? `transaction: ${txCode}, operations: ${opCodes.join(", ")}`
+      : `transaction: ${txCode}`;
+    return {
+      status: 400,
+      code: "SOROBAN_INVOCATION_ERROR",
+      message: `Contract invocation failed — ${detail}`,
+      detail: resultCodes,
+    };
+  }
+
+  // Generic Horizon/RPC HTTP error
+  const httpStatus = error?.response?.status ?? error?.status;
+  if (httpStatus && httpStatus >= 400) {
+    return {
+      status: httpStatus >= 500 ? 502 : 400,
+      code: "STELLAR_RPC_ERROR",
+      message: error?.message ?? `Stellar RPC returned HTTP ${httpStatus}`,
+      detail: error?.response?.data ?? null,
+    };
+  }
+
+  return null;
+}
+
+/**
  * Build an unsigned Soroban transaction XDR for a contract invocation.
  * The frontend signs and submits it.
  */
@@ -40,7 +100,24 @@ export async function buildTx(callerAddress, contractId, method, args = []) {
     .setTimeout(30)
     .build();
 
-  const prepared = await server.prepareTransaction(tx);
+  let prepared;
+  try {
+    prepared = await server.prepareTransaction(tx);
+  } catch (error) {
+    // Surface Soroban simulation errors with full detail
+    if (SorobanRpc.Api.isSimulationError(error)) {
+      throw {
+        status: 400,
+        code: "SOROBAN_SIMULATION_ERROR",
+        message: `Contract simulation failed: ${error.error ?? error.message}`,
+        detail: error.error ?? error.message,
+      };
+    }
+    const parsed = parseSorobanError(error);
+    if (parsed) throw parsed;
+    throw error;
+  }
+
   return prepared.toXDR();
 }
 
@@ -73,13 +150,20 @@ export async function retryBuildTx(callerAddress, contractId, method, args = [])
       const isRateLimit = isRateLimitError(error);
 
       if (isAccountNotFound) {
-        throw { status: 400, message: "Caller account not found on Stellar network" };
+        throw { status: 400, code: "ACCOUNT_NOT_FOUND", message: "Caller account not found on Stellar network" };
+      }
+
+      // Surface Soroban simulation / invocation errors immediately — no retry
+      const sorobanError = parseSorobanError(error);
+      if (sorobanError) throw sorobanError;
+      if (error?.code === "SOROBAN_SIMULATION_ERROR" || error?.code === "SOROBAN_INVOCATION_ERROR") {
+        throw error;
       }
 
       if (isRateLimit) {
         if (isLastAttempt) {
           logger.warn("Horizon rate limit exceeded after max retries", { method, contractId, attempt });
-          throw { status: 429, message: "Stellar Horizon rate limit exceeded. Please try again later." };
+          throw { status: 429, code: "RATE_LIMIT_EXCEEDED", message: "Stellar Horizon rate limit exceeded. Please try again later." };
         }
         const delay = baseBackoffMs * Math.pow(2, attempt - 1);
         logger.warn(`Horizon rate limit hit, retrying with backoff`, { method, contractId, attempt, maxRetries, delayMs: delay });
@@ -89,7 +173,7 @@ export async function retryBuildTx(callerAddress, contractId, method, args = [])
 
       if (isNetworkError || isSimulationError) {
         if (isLastAttempt) {
-          throw { status: 503, message: "Stellar RPC is currently unavailable. Please try again later." };
+          throw { status: 503, code: "RPC_UNAVAILABLE", message: "Stellar RPC is currently unavailable. Please try again later." };
         }
         const delay = baseBackoffMs * Math.pow(2, attempt - 1);
         await new Promise((resolve) => setTimeout(resolve, delay));
