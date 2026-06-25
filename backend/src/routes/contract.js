@@ -11,6 +11,7 @@ import {
 } from "../stellar.js";
 import { validateContractIdMiddleware, validateContractId } from "../validation.js";
 import { sendError } from "../error-response.js";
+import { recordCacheHit, recordCacheMiss } from "../metrics.js";
 
 const { Contract, SorobanRpc, TransactionBuilder, BASE_FEE, Account } = StellarSdk;
 
@@ -90,8 +91,15 @@ async function readContractState(contractId, tokenId) {
   };
 }
 
+/**
+ * Cache key format: `contract:{network}:{contractId}:state:{tokenId}` (#422).
+ * The network segment is required (not just cosmetic): the same `contractId`
+ * string can be queried against both testnet and mainnet, and without a
+ * network discriminator those two distinct on-chain states would alias to
+ * the same cache entry.
+ */
 function getContractStateCacheKey(contractId, tokenId) {
-  return `${getNetworkLabel()}:${networkPassphrase}:${contractId}:${tokenId}`;
+  return `contract:${getNetworkLabel()}:${contractId}:state:${tokenId}`;
 }
 
 function resolveStateRequest(req, res) {
@@ -123,6 +131,20 @@ export function _resetContractStateCache() {
   contractStateCache.clear();
 }
 
+/**
+ * Invalidate cached state for a contract across all cached token ids (#422).
+ * The 30s TTL already self-heals quickly, but this lets callers (e.g. a
+ * successful initialize) clear stale data immediately instead of waiting
+ * out the TTL.
+ */
+export function invalidateContractStateCache(contractId) {
+  for (const key of contractStateCache.keys()) {
+    if (key.includes(`:${contractId}:`)) {
+      contractStateCache.delete(key);
+    }
+  }
+}
+
 contractRouter.get("/state", async (req, res, next) => {
   try {
     const stateRequest = resolveStateRequest(req, res);
@@ -134,9 +156,11 @@ contractRouter.get("/state", async (req, res, next) => {
     const now = Date.now();
 
     if (cached && now - cached.fetchedAt < CONTRACT_STATE_CACHE_TTL_MS) {
+      recordCacheHit("contract_state");
       return res.json(cached.state);
     }
 
+    recordCacheMiss("contract_state");
     const state = await readContractState(contractId, tokenId);
     contractStateCache.set(cacheKey, { state, fetchedAt: now });
     res.json(state);

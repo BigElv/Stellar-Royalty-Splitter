@@ -32,6 +32,10 @@ const metrics = {
   // ── #396: Stellar RPC tracing ─────────────────────────────────────────
   /** Map<operationLabel> → { count, totalMs } */
   stellarRpcCalls: new Map(),
+
+  // ── #422: RPC response cache hit/miss tracking ─────────────────────────
+  /** Map<cacheName> → { hits, misses } */
+  cacheStats: new Map(),
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -123,6 +127,22 @@ export function recordStellarRpcCall(operation, durationMs, success = true) {
   metrics.stellarRpcCalls.set(operation, entry);
 }
 
+// ── #422: Cache hit/miss recorders ──────────────────────────────────────
+
+function getCacheEntry(cacheName) {
+  const entry = metrics.cacheStats.get(cacheName) ?? { hits: 0, misses: 0 };
+  metrics.cacheStats.set(cacheName, entry);
+  return entry;
+}
+
+export function recordCacheHit(cacheName) {
+  getCacheEntry(cacheName).hits += 1;
+}
+
+export function recordCacheMiss(cacheName) {
+  getCacheEntry(cacheName).misses += 1;
+}
+
 // ── Snapshot ──────────────────────────────────────────────────────────────
 
 export function getMetricsSnapshot() {
@@ -156,6 +176,9 @@ export function getMetricsSnapshot() {
         { ...v, averageMs: v.count > 0 ? v.totalMs / v.count : 0 },
       ]),
     ),
+
+    // #422
+    cacheStats: Object.fromEntries(metrics.cacheStats),
   };
 }
 
@@ -233,6 +256,22 @@ export function prometheusMetrics() {
     );
   }
 
+  // #422 — cache hit/miss counters
+  lines.push(
+    "# HELP stellar_cache_hits_total Cache hits by cache name.",
+    "# TYPE stellar_cache_hits_total counter",
+  );
+  for (const [cache, v] of Object.entries(snapshot.cacheStats)) {
+    lines.push(`stellar_cache_hits_total{cache="${cache}"} ${v.hits}`);
+  }
+  lines.push(
+    "# HELP stellar_cache_misses_total Cache misses by cache name.",
+    "# TYPE stellar_cache_misses_total counter",
+  );
+  for (const [cache, v] of Object.entries(snapshot.cacheStats)) {
+    lines.push(`stellar_cache_misses_total{cache="${cache}"} ${v.misses}`);
+  }
+
   lines.push("");
   return lines.join("\n");
 }
@@ -250,4 +289,5 @@ export function resetMetrics() {
   metrics.requestBytesTotal = 0;
   metrics.responseBytesTotal = 0;
   metrics.stellarRpcCalls.clear();
+  metrics.cacheStats.clear();
 }

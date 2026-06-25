@@ -200,11 +200,24 @@ The endpoint only calls Soroban RPC simulation. It does not submit the transacti
 
 Returns on-chain collaborator addresses and shares.
 
+Cached in memory for 5 minutes (#422) — far longer than the 30s contract-state cache, since collaborator shares are effectively immutable once a contract is initialized. Cache key format: `contract:{network}:{contractId}:collaborators`. The cache is invalidated immediately whenever `/api/v1/initialize` or `/api/v1/initialize/reveal` successfully builds a transaction for that contract, rather than relying solely on the 5-minute TTL to pick up the new collaborator list.
+
+## Caching strategy (#422)
+
+| Cache | TTL | Key format | Invalidation |
+| ----- | --- | ---------- | ------------- |
+| Contract state (`GET /contract/state`) | 30s | `contract:{network}:{contractId}:state:{tokenId}` | TTL only — state (balance, royalty rate) can change at any time, so a short TTL is the primary defense. |
+| Collaborator list (`GET /collaborators/:contractId`) | 5min | `contract:{network}:{contractId}:collaborators` | TTL, plus explicit invalidation on successful initialize/reveal for that contract. |
+
+Both caches are in-memory `Map`s local to a single backend process (no Redis/shared cache layer). Cache hit/miss counts are exposed on the `/metrics` endpoint as `stellar_cache_hits_total{cache="..."}` / `stellar_cache_misses_total{cache="..."}` with `cache` values `contract_state` and `collaborators`.
+
 ## Contract
 
 ### `GET /api/v1/contract/state`
 
-Returns the configured contract's current state for frontend displays: admin address, royalty rate, recipient shares, token balance, and network details. Responses are cached for 30 seconds to reduce Soroban RPC calls.
+Returns the configured contract's current state for frontend displays: admin address, royalty rate, recipient shares, token balance, and network details. Responses are cached in memory for 30 seconds to reduce Soroban RPC calls.
+
+Cache key format: `contract:{network}:{contractId}:state:{tokenId}` (#422). The network segment is included because the same `contractId` string can be queried against both testnet and mainnet; without it, those two distinct on-chain states would alias to the same cache entry.
 
 Uses `ROYALTY_CONTRACT_ID` or `CONTRACT_ID` by default. Pass `contractId` to override. Uses `ROYALTY_TOKEN_ID`, `TOKEN_CONTRACT_ID`, or `TOKEN_ID` by default for the balance token. Pass `tokenId` to override.
 
@@ -278,6 +291,8 @@ Exposes:
 - `stellar_transactions_failed_total`
 - `stellar_horizon_response_time_average_ms`
 - `stellar_horizon_response_time_count`
+- `stellar_cache_hits_total{cache="..."}` (#422)
+- `stellar_cache_misses_total{cache="..."}` (#422)
 
 ## Local Seed
 
