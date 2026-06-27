@@ -28,7 +28,7 @@ export {
   getTransactionById,
 } from "./transactions.js";
 
-// Webhooks (#295, #401)
+// Webhooks (#295, #401, #428)
 export {
   registerWebhook,
   listWebhooks,
@@ -37,6 +37,7 @@ export {
   listDeadLetters,
   listAllPendingDeadLetters,
   markDeadLetterRetried,
+  deleteOldDeadLetters,
 } from "./webhooks.js";
 
 // Audit logging
@@ -54,6 +55,7 @@ export {
   recordSecondaryRoyaltyDistribution,
   getSecondaryRoyaltyDistributions,
   getRoyaltyStatistics,
+  applyLargestRemainder,
 } from "./secondary-royalties.js";
 
 // Analytics
