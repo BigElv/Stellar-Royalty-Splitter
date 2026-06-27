@@ -9,6 +9,7 @@ import {
   rotateSigningKey,
 } from "../signing-key.js";
 import { buildAndRecordTransaction } from "./_shared.js";
+import { getCacheManager } from "../cache.js"; // #399
 
 export const adminRouter = Router();
 
@@ -111,6 +112,78 @@ adminRouter.post("/set-admins", validate(setAdminsSchema), async (req, res, next
     });
 
     res.json({ success: true, xdr, transactionId, adminCount: admins.length, threshold });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /admin/transfer
+ * Transfer admin ownership with immediate cache invalidation (#399).
+ * Body: { contractId, walletAddress, newAdmin, signedXdr }
+ */
+adminRouter.post("/transfer", async (req, res, next) => {
+  try {
+    const { contractId, walletAddress, newAdmin, signedXdr } = req.body;
+
+    if (!contractId || !walletAddress || !newAdmin || !signedXdr) {
+      return sendValidationError(res, [
+        { field: "contractId", message: "required" },
+        { field: "walletAddress", message: "required" },
+        { field: "newAdmin", message: "required" },
+        { field: "signedXdr", message: "required" },
+      ]);
+    }
+
+    logger.info("admin_transfer requested", {
+      contractId,
+      walletAddress,
+      newAdmin,
+      correlationId: req.correlationId,
+    });
+
+    const { submitTransaction, getContractAdmin } = await import("../stellar.js");
+
+    // 1. Submit the admin transfer transaction
+    const result = await submitTransaction(signedXdr);
+
+    if (result.status !== "SUCCESS") {
+      logger.warn("admin_transfer transaction failed", {
+        contractId,
+        result,
+        correlationId: req.correlationId,
+      });
+      return sendError(res, 400, "transaction_failed", "Admin transfer transaction failed", {
+        detail: result,
+      });
+    }
+
+    // 2. IMMEDIATE CACHE INVALIDATION (#399 core fix)
+    // This ensures no stale reads even before the event listener catches up
+    const cache = getCacheManager();
+    await cache.invalidateAdmin();
+    logger.info("[Admin] Cache invalidated immediately after transfer", {
+      contractId,
+      newAdmin,
+      transactionHash: result.hash,
+    });
+
+    // 3. Verify the on-chain state matches
+    const liveAdmin = await getContractAdmin(contractId);
+    if (liveAdmin !== newAdmin) {
+      logger.warn("[Admin] On-chain admin mismatch after transfer", {
+        expected: newAdmin,
+        actual: liveAdmin,
+        contractId,
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Admin transfer completed and cache invalidated",
+      newAdmin: liveAdmin,
+      transactionHash: result.hash,
+    });
   } catch (err) {
     next(err);
   }
