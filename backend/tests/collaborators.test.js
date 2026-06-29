@@ -7,6 +7,7 @@ const COLLAB2  = "GCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
 
 const mockSimulate = jest.fn();
 const mockIsSimError = jest.fn(() => false);
+const mockLookupCollaborators = jest.fn(() => []);
 
 await jest.unstable_mockModule("@stellar/stellar-sdk", () => ({
   default: {
@@ -58,6 +59,7 @@ await jest.unstable_mockModule("../src/stellar.js", () => ({
 await jest.unstable_mockModule("../src/database/index.js", () => ({
   recordTransaction: jest.fn(() => "tx-789"),
   addAuditLog: jest.fn(),
+  lookupCollaborators: mockLookupCollaborators,
   recordNonceIfNew: jest.fn(() => true),
   initializeDatabase: jest.fn(),
   getMigrationVersion: jest.fn(() => 1),
@@ -66,6 +68,7 @@ await jest.unstable_mockModule("../src/database/index.js", () => ({
 const { default: app } = await import("./app.js");
 const { _resetCollaboratorsCache } = await import("../src/routes/collaborators.js");
 const { SorobanRpc } = await import("@stellar/stellar-sdk");
+const { _resetCollaboratorsCache } = await import("../src/collaborators-cache.js");
 
 describe("GET /api/v1/collaborators/:contractId", () => {
   beforeEach(() => {
@@ -73,6 +76,9 @@ describe("GET /api/v1/collaborators/:contractId", () => {
     mockSimulate.mockReset();
     mockIsSimError.mockReset();
     mockIsSimError.mockReturnValue(false);
+    mockLookupCollaborators.mockReset();
+    mockLookupCollaborators.mockReturnValue([]);
+    _resetCollaboratorsCache();
   });
 
   test("happy path — returns collaborators with basisPoints", async () => {
@@ -125,5 +131,50 @@ describe("GET /api/v1/collaborators/:contractId", () => {
     const res = await request(app).get(`/api/v1/collaborators/${CONTRACT}`);
 
     expect(res.status).toBe(500);
+  });
+});
+
+describe("GET /api/v1/collaborators/lookup", () => {
+  beforeEach(() => {
+    mockSimulate.mockReset();
+    mockLookupCollaborators.mockReset();
+    mockLookupCollaborators.mockReturnValue([]);
+  });
+
+  test("returns empty suggestions when there is no collaborator history", async () => {
+    const res = await request(app).get("/api/v1/collaborators/lookup");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ suggestions: [] });
+  });
+
+  test("returns history suggestions from the lookup store", async () => {
+    mockLookupCollaborators.mockReturnValueOnce([
+      {
+        address: COLLAB1,
+        label: "GBBBBBBB…BBBBBB",
+        contractId: CONTRACT,
+        lastSeen: "2026-01-01T00:00:00.000Z",
+        sources: ["initialize_history"],
+      },
+    ]);
+
+    const res = await request(app).get("/api/v1/collaborators/lookup");
+
+    expect(res.status).toBe(200);
+    expect(res.body.suggestions).toHaveLength(1);
+    expect(res.body.suggestions[0].address).toBe(COLLAB1);
+  });
+
+  test("forwards query text and limit to support debounced autocomplete", async () => {
+    await request(app).get("/api/v1/collaborators/lookup?q=GBBBB&limit=5");
+
+    expect(mockLookupCollaborators).toHaveBeenCalledWith("GBBBB", "5");
+  });
+
+  test("does not run Soroban simulation for autocomplete lookup", async () => {
+    await request(app).get("/api/v1/collaborators/lookup?q=G");
+
+    expect(mockSimulate).not.toHaveBeenCalled();
   });
 });

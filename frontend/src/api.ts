@@ -156,6 +156,14 @@ export interface AuditLogEntry {
   timestamp: string;
 }
 
+export interface CollaboratorSuggestion {
+  address: string;
+  label: string;
+  contractId: string | null;
+  lastSeen: string | null;
+  sources: string[];
+}
+
 export interface SecondarySale {
   id: number;
   nftId: string;
@@ -177,6 +185,14 @@ export interface RoyaltyStats {
     totalRoyaltiesDistributed: string;
     numberOfSales: number;
   } | null;
+}
+
+// #504: contract pause state for the distribution UI banner.
+export interface PauseState {
+  paused: boolean;
+  pauseTimestamp: number;
+  pauseSource: string | null;
+  remainingSeconds: number;
 }
 
 export type ContractStateCacheStatus = "cached" | "live" | "error";
@@ -259,6 +275,11 @@ export const api = {
   getCollaborators: (contractId: string) =>
     get<{ address: string; basisPoints: number }[]>(
       `/collaborators/${contractId}`,
+    ),
+
+  lookupCollaborators: (query = "", limit = 10) =>
+    get<{ suggestions: CollaboratorSuggestion[] }>(
+      `/collaborators/lookup?q=${encodeURIComponent(query)}&limit=${limit}`,
     ),
 
   // Transaction History & Audit Log APIs
@@ -404,6 +425,10 @@ export const api = {
     get<{ contractId: string; version: string }>(
       `/contract/version/${contractId}`,
     ),
+
+  // #504: Fetch the contract's pause state so the UI can warn and block.
+  getPauseState: (contractId: string) =>
+    get<PauseState>(`/contract/pause/${contractId}`),
 
   getContractState: (
     contractId: string,
