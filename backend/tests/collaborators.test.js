@@ -54,6 +54,7 @@ await jest.unstable_mockModule("../src/stellar.js", () => ({
   u32ToScVal: jest.fn((n) => n),
   vecToScVal: jest.fn((v) => v),
   bytesN32HexToScVal: jest.fn((h) => h),
+  getNetworkLabel: jest.fn(() => "Testnet"),
 }));
 
 await jest.unstable_mockModule("../src/database/index.js", () => ({
@@ -66,7 +67,7 @@ await jest.unstable_mockModule("../src/database/index.js", () => ({
 }));
 
 const { default: app } = await import("./app.js");
-const { _resetCollaboratorsCache } = await import("../src/routes/collaborators.js");
+const { invalidateCollaboratorsCache } = await import("../src/routes/collaborators.js");
 const { SorobanRpc } = await import("@stellar/stellar-sdk");
 const { _resetCollaboratorsCache } = await import("../src/collaborators-cache.js");
 
@@ -76,9 +77,7 @@ describe("GET /api/v1/collaborators/:contractId", () => {
     mockSimulate.mockReset();
     mockIsSimError.mockReset();
     mockIsSimError.mockReturnValue(false);
-    mockLookupCollaborators.mockReset();
-    mockLookupCollaborators.mockReturnValue([]);
-    _resetCollaboratorsCache();
+    invalidateCollaboratorsCache(CONTRACT);
   });
 
   test("happy path — returns collaborators with basisPoints", async () => {

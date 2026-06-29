@@ -105,21 +105,27 @@ describe("getRoyaltyStatistics combined CTE (#462)", () => {
   });
 
   // 1. The module prepares exactly ONE statement for getRoyaltyStatistics
-  test("module uses a single pre-prepared statement (not three separate ones)", () => {
+  test("module lazily prepares one statement and reuses it", () => {
     // The _statsStmt is module-level — prepare was called once at import time.
     // Subsequent calls to getRoyaltyStatistics must NOT call prepare again.
     const callsBefore = mockDb.prepare.mock.calls.length;
     mockGet.mockReturnValue(makeEmptyRow());
 
     getRoyaltyStatistics(CONTRACT);
+    const callsAfterFirst = mockDb.prepare.mock.calls.length;
+
     getRoyaltyStatistics(CONTRACT + "X");
 
     const callsAfter = mockDb.prepare.mock.calls.length;
-    expect(callsAfter - callsBefore).toBe(0); // no new prepare calls
+    expect(callsAfterFirst - callsBefore).toBeLessThanOrEqual(1);
+    expect(callsAfter).toBe(callsAfterFirst);
   });
 
   // 2. The CTE SQL contains all required sub-queries in one statement
   test("prepared SQL contains all required CTEs in a single statement", () => {
+    mockGet.mockReturnValue(makeEmptyRow());
+    getRoyaltyStatistics(CONTRACT);
+
     const allSql = allPreparedSqls.join("\n");
 
     // Must include the totals CTE for aggregating sales

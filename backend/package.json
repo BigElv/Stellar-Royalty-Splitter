@@ -13,7 +13,10 @@
   },
   "jest": {
     "testEnvironment": "node",
-    "transform": {}
+    "transform": {},
+    "moduleNameMapper": {
+      "^ioredis$": "<rootDir>/__mocks__/ioredis.js"
+    }
   },
   "devDependencies": {
     "eslint": "^8.57.0",

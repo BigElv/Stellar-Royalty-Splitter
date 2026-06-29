@@ -204,8 +204,10 @@ describe("Cache Invalidation (#399)", () => {
     await cache.set(CacheManager.KEYS.ADMIN, "GOLDADMIN123");
 
     listener = new AdminEventListener(rpc, contractId);
+    listener.cache = cache;
 
     rpc.emitAdminTransfer("GOLDADMIN123", "GEVENTADMIN999");
+
     await listener._checkForEvents();
 
     const cached = await cache.get(CacheManager.KEYS.ADMIN);
@@ -228,9 +230,11 @@ describe("Cache Invalidation (#399)", () => {
     await cache.set(CacheManager.KEYS.ADMIN, "GOLDADMIN123");
 
     listener = new AdminEventListener(rpc, contractId);
+    listener.cache = cache;
 
     rpc.emitAdminTransfer("GOLDADMIN123", "GDUPADMIN111");
-    rpc.events.push({ ...rpc.events[0] }); // exact duplicate event id
+    rpc.events.push({ ...rpc.events[0] }); // duplicate event id
+
     await listener._checkForEvents();
 
     expect(listener.processedEvents.size).toBe(1);
@@ -241,8 +245,10 @@ describe("Cache Invalidation (#399)", () => {
     await cache.set(CacheManager.KEYS.ADMIN, "GOLDADMIN123");
 
     listener = new AdminEventListener(rpc, contractId);
+    listener.cache = cache;
 
     rpc.emitAcceptAdmin("GOLDADMIN123", "GACCEPTEDADMIN222");
+
     await listener._checkForEvents();
 
     const cached = await cache.get(CacheManager.KEYS.ADMIN);

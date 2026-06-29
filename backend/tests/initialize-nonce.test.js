@@ -16,6 +16,7 @@ await jest.unstable_mockModule("../src/stellar.js", () => ({
   getNetworkLabel: jest.fn(() => "Testnet"),
   server: {},
   networkPassphrase: "Test SDF Network ; September 2015",
+  getNetworkLabel: jest.fn(() => "Testnet"),
 }));
 
 const recordTransaction = jest.fn(() => "tx-123");

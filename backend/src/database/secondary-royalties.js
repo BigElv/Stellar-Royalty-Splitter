@@ -335,48 +335,57 @@ export function _invalidateStatsCache(contractId) {
 }
 
 // Single CTE query combining totals, pending pool, and last distribution (#462).
-const _statsStmt = db.prepare(`
-  WITH
-    last_dist_ts AS (
-      SELECT COALESCE(MAX(timestamp), '1970-01-01') AS ts
-      FROM secondary_royalty_distributions
-      WHERE contractId = ?
-    ),
-    totals AS (
+// Prepare lazily so route-only tests can initialize the schema before use.
+let _statsStmt;
+
+function getStatsStatement() {
+  if (!_statsStmt) {
+    _statsStmt = db.prepare(`
+      WITH
+        last_dist_ts AS (
+          SELECT COALESCE(MAX(timestamp), '1970-01-01') AS ts
+          FROM secondary_royalty_distributions
+          WHERE contractId = ?
+        ),
+        totals AS (
+          SELECT
+            COUNT(*) AS count,
+            COALESCE(SUM(CAST(royaltyAmount AS REAL)), 0) AS totalRoyalties,
+            COALESCE(SUM(CAST(salePrice AS REAL)), 0) AS totalVolume
+          FROM secondary_sales
+          WHERE contractId = ?
+        ),
+        pending AS (
+          SELECT COALESCE(SUM(CAST(royaltyAmount AS REAL)), 0) AS pendingPool
+          FROM secondary_sales, last_dist_ts
+          WHERE secondary_sales.contractId = ?
+            AND secondary_sales.timestamp > last_dist_ts.ts
+        ),
+        last_dist AS (
+          SELECT srd.timestamp, srd.totalRoyaltiesDistributed, srd.numberOfSales, t.txHash
+          FROM secondary_royalty_distributions srd
+          LEFT JOIN transactions t ON srd.transactionId = t.id
+          WHERE srd.contractId = ?
+          ORDER BY srd.timestamp DESC
+          LIMIT 1
+        )
       SELECT
-        COUNT(*) AS count,
-        COALESCE(SUM(CAST(royaltyAmount AS REAL)), 0) AS totalRoyalties,
-        COALESCE(SUM(CAST(salePrice AS REAL)), 0) AS totalVolume
-      FROM secondary_sales
-      WHERE contractId = ?
-    ),
-    pending AS (
-      SELECT COALESCE(SUM(CAST(royaltyAmount AS REAL)), 0) AS pendingPool
-      FROM secondary_sales, last_dist_ts
-      WHERE secondary_sales.contractId = ?
-        AND secondary_sales.timestamp > last_dist_ts.ts
-    ),
-    last_dist AS (
-      SELECT srd.timestamp, srd.totalRoyaltiesDistributed, srd.numberOfSales, t.txHash
-      FROM secondary_royalty_distributions srd
-      LEFT JOIN transactions t ON srd.transactionId = t.id
-      WHERE srd.contractId = ?
-      ORDER BY srd.timestamp DESC
-      LIMIT 1
-    )
-  SELECT
-    totals.count          AS totalSales,
-    totals.totalRoyalties AS totalRoyalties,
-    totals.totalVolume    AS totalVolume,
-    pending.pendingPool   AS pendingPool,
-    last_dist.timestamp                  AS lastDistTimestamp,
-    last_dist.totalRoyaltiesDistributed  AS lastDistTotal,
-    last_dist.numberOfSales              AS lastDistSales,
-    last_dist.txHash                     AS lastDistTxHash
-  FROM totals
-  CROSS JOIN pending
-  LEFT JOIN last_dist ON 1=1
-`);
+        totals.count          AS totalSales,
+        totals.totalRoyalties AS totalRoyalties,
+        totals.totalVolume    AS totalVolume,
+        pending.pendingPool   AS pendingPool,
+        last_dist.timestamp                  AS lastDistTimestamp,
+        last_dist.totalRoyaltiesDistributed  AS lastDistTotal,
+        last_dist.numberOfSales              AS lastDistSales,
+        last_dist.txHash                     AS lastDistTxHash
+      FROM totals
+      CROSS JOIN pending
+      LEFT JOIN last_dist ON 1=1
+    `);
+  }
+
+  return _statsStmt;
+}
 
 /**
  * Get royalty statistics for a contract.
@@ -391,7 +400,7 @@ export function getRoyaltyStatistics(contractId) {
     return cached.data;
   }
 
-  const row = _statsStmt.get(contractId, contractId, contractId, contractId);
+  const row = getStatsStatement().get(contractId, contractId, contractId, contractId);
 
   const lastDistribution =
     row.lastDistTimestamp != null

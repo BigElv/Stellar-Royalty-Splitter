@@ -3,11 +3,12 @@ import path from "path";
 import { fileURLToPath } from "url";
 import crypto from "crypto";
 import logger from "../logger.js";
+import { instrumentDatabase } from "../query-profiler.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dbPath = process.env.DATABASE_PATH ?? path.join(__dirname, "..", "..", "audit.db");
 
-export const db = new Database(dbPath);
+export const db = instrumentDatabase(new Database(dbPath));
 db.pragma("journal_mode = WAL");
 db.pragma("synchronous = NORMAL"); // safe with WAL, much faster
 db.pragma("cache_size = -64000"); // 64MB page cache
@@ -361,12 +362,20 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_transactions_contractId ON transactions(contractId);
     CREATE INDEX IF NOT EXISTS idx_transactions_txHash ON transactions(txHash);
     CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);
+    CREATE INDEX IF NOT EXISTS idx_transactions_contract_status_timestamp_type
+      ON transactions(contractId, status, timestamp, type);
     CREATE INDEX IF NOT EXISTS idx_secondary_sales_contractId ON secondary_sales(contractId);
     CREATE INDEX IF NOT EXISTS idx_secondary_sales_nftId ON secondary_sales(nftId);
     CREATE INDEX IF NOT EXISTS idx_secondary_sales_timestamp ON secondary_sales(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_secondary_sales_contract_distributed_timestamp
+      ON secondary_sales(contractId, distributed, timestamp);
     CREATE INDEX IF NOT EXISTS idx_secondary_distributions_contractId ON secondary_royalty_distributions(contractId);
+    CREATE INDEX IF NOT EXISTS idx_secondary_distributions_contract_timestamp
+      ON secondary_royalty_distributions(contractId, timestamp);
     CREATE INDEX IF NOT EXISTS idx_audit_contractId ON audit_log(contractId);
     CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_distribution_payouts_transaction_collaborator
+      ON distribution_payouts(transactionId, collaboratorAddress);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_secondary_sales_dedup ON secondary_sales(contractId, nftId, previousOwner, newOwner, salePrice, saleToken);
   `);
 

@@ -49,6 +49,12 @@ Operator health check for the backend and Stellar connectivity.
     "deployed": true,
     "initialized": true,
     "status": "initialized"
+  },
+  "queryProfiler": {
+    "enabled": true,
+    "thresholdMs": 100,
+    "totalQueries": 12,
+    "slowQueries": 1
   }
 }
 ```
@@ -61,8 +67,46 @@ Operator health check for the backend and Stellar connectivity.
 | `horizon.connected` | Whether Horizon responded successfully |
 | `horizon.url` | Configured `HORIZON_URL` |
 | `contract.status` | `not_configured`, `deployed`, `initialized`, `unreachable`, or `error` |
+| `queryProfiler` | In-process database query profiling summary |
 
 Configure the default contract with `ROYALTY_CONTRACT_ID` or `CONTRACT_ID`. Responses are cached for `HEALTH_CACHE_TTL_MS` (default 30s).
+
+### `GET /api/v1/health/query-performance`
+
+Returns the in-process query profiler metrics used to diagnose slow SQLite
+statements. Queries at or above `SLOW_QUERY_THRESHOLD_MS` are logged and sampled.
+The default threshold is `100`.
+
+**Response**
+
+```json
+{
+  "enabled": true,
+  "thresholdMs": 100,
+  "totalQueries": 12,
+  "slowQueries": 1,
+  "averageDurationMs": 22.4,
+  "maxDurationMs": 132.1,
+  "operations": {
+    "all": {
+      "count": 5,
+      "slowCount": 1,
+      "averageDurationMs": 44.8,
+      "maxDurationMs": 132.1
+    }
+  },
+  "slowQuerySamples": [
+    {
+      "sql": "SELECT ...",
+      "operation": "all",
+      "durationMs": 132.1,
+      "thresholdMs": 100,
+      "observedAt": "2026-01-01T00:00:00.000Z",
+      "recommendations": ["Run EXPLAIN QUERY PLAN for this statement and consider a targeted composite index."]
+    }
+  ]
+}
+```
 
 Legacy `/api/*` paths redirect to `/api/v1/*`.
 
